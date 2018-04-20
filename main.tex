@@ -1,0 +1,154 @@
+%!TEX TS-program = xelatex
+%!TEX encoding = UTF-8 Unicode
+\documentclass[UTF8]{ctexart}
+\usepackage{geometry}                % See geometry.pdf to learn the layout options. There are lots.
+\geometry{letterpaper}                   % ... or a4paper or a5paper or ... 
+%\geometry{landscape}                % Activate for for rotated page geometry
+%\usepackage[parfill]{parskip}    % Activate to begin paragraphs with an empty line rather than an indent
+\usepackage{graphicx}
+\usepackage{amssymb}
+
+% Will Robertson's fontspec.sty can be used to simplify font choices.
+% To experiment, open /Applications/Font Book to examine the fonts provided on Mac OS X,
+% and change "Hoefler Text" to any of these choices.
+
+\usepackage{fontspec,xltxtra,xunicode}
+\defaultfontfeatures{Mapping=tex-text}
+\setromanfont[Mapping=tex-text]{Hoefler Text}
+\setsansfont[Scale=MatchLowercase,Mapping=tex-text]{Gill Sans}
+\setmonofont[Scale=MatchLowercase]{Andale Mono}
+
+\usepackage{url}
+\usepackage[super,square]{natbib}
+
+\setCJKmainfont[BoldFont={PingFangSC-Semibold}]{PingFangSC-Thin} % 设置中文字体，这里粗体使用苹方-Regular，默认使用苹方-Light
+
+
+\usepackage{enumitem}
+
+
+
+\usepackage{listings}
+\usepackage{color}
+\definecolor{mygreen}{rgb}{0,0.6,0}
+\definecolor{mygray}{rgb}{0.5,0.5,0.5}
+\definecolor{mymauve}{rgb}{0.58,0,0.82}
+\lstset{
+  backgroundcolor=\color{white},   % choose the background color
+  basicstyle=\footnotesize\ttfamily,        % size of fonts used for the code
+  breaklines=true,                 % automatic line breaking only at whitespace
+  captionpos=b,                    % sets the caption-position to bottom
+  commentstyle=\color{mygreen},    % comment style
+  escapeinside={\%*}{*)},          % if you want to add LaTeX within your code
+  keywordstyle=\color{blue},       % keyword style
+  stringstyle=\color{mymauve},     % string literal style
+  framextopmargin=50pt,
+}
+
+
+\title{RocketMQ学习笔记}
+\author{亦心}
+%\date{} 
+
+\begin{document}
+\maketitle
+
+\newpage
+\tableofcontents
+\newpage
+
+
+\section{初识}
+\subsection{快速开始}
+
+实验环境的搭建比较简单，详细步骤可以参考RocketMQ官网的Quick Start\cite{quick-start}。这里再补充几点：
+
+\begin{enumerate}[itemindent=1em]
+\item 直接下载使用binary release，避免maven “downloading the internet”。
+
+\item 修改Name Server监听的端口号：
+\begin{lstlisting}[language=sh]
+> cat namesrv.properties
+listenPort = 8876
+> nohup sh bin/mqnamesrv -c namesrv.properties &
+\end{lstlisting}
+\item 修改Broker监听的端口号：
+\begin{lstlisting}[language=sh]
+> cat broker.properties
+listenPort = 8874
+> nohup sh bin/mqbroker -n localhost:8876 -c broker.properties &
+\end{lstlisting}
+
+\item 使用任意命令行工具前都需要保证环境变量已经导入：
+\begin{lstlisting}[language=sh]
+> export NAMESRV_ADDR=localhost:8876
+\end{lstlisting}
+
+\end{enumerate} 
+
+
+
+\subsection{简单例子}
+内容依然来自官网的Simple Example\cite{simple-example}，为了能让例子运行，还几项配置：
+
+\begin{enumerate}[itemindent=1em]
+
+\item 在pom.xml中导入rocketmq-client对应的Maven依赖：
+\begin{lstlisting}
+<dependency>
+  <groupId>com.alibaba.rocketmq</groupId>
+  <artifactId>rocketmq-client</artifactId>
+  <version>3.2.6</version>
+</dependency>
+\end{lstlisting}
+
+
+\item 为producer设置Name Server的地址：
+\begin{lstlisting}[language=Java]
+producer.setNamesrvAddr("localhost:8876");
+\end{lstlisting}
+
+\end{enumerate} 
+
+
+\subsection{消息类型}
+RocketMQ支持3种消息模式：
+
+\begin{enumerate}[itemindent=1em]
+\item Reliable synchronous transmission 可靠同步传输。
+\item Reliable asynchronous transmission 可靠异步传输。
+\item One-way transmission One-way传输。
+\end{enumerate} 
+
+同步和异步传输都是通过send方法发送，其中异步传输还需要额外提供SendCallback接口的实现，而one-way消息通过sendOneway方法发送。
+
+\subsection{Message类}
+无论是那种传输模型，消息本身都储存在Message.java类中，在调用其构造函数时，至少需要传入消息主题、消息标签和消息体3个参数。以下是各个参数的含义：
+
+\begin{enumerate}[itemindent=1em]
+\item topic 消息主题，每一条消息都有且仅有一个主题。主题是生产者和消费者之间的桥梁。
+\item flag 消息标志，系统不做干预，完全由应用决定如何使用。
+\item body 消息体，即消息的内容。
+\end{enumerate} 
+
+
+以上3个参数直接存储在Message的字段中，以下3个参数以Key-Value的形式存储在系统属性字段中，各字段含义定义在MessageConst.java中，摘录如下：
+\begin{enumerate}[itemindent=1em]
+\item tag 消息标签，每一条消息只可以有一个标签。标签主要用于简单场景下的消息过滤\cite{filter-example}。
+\item keys 消息关键词，查询消息使用，多个Key用KEY\_SEPARATOR隔开。
+\item waitStoreMsgOK 是否等待服务器将消息存储完毕再返回，可能是等待刷盘完成或者等待同步复制到其他服务器。
+\end{enumerate} 
+
+
+\subsection{让消息飞一会儿}
+跟着send方法一路走到sendDefaultImpl方法中，可以看到消息发送一共包含3个主要逻辑。
+
+\subsubsection{TopicPublishInfo}
+第一个主要逻辑，根据Topic选择TopicPublicInfo：
+
+\section{测试}
+
+\newpage
+\bibliography{ref.bib}
+\bibliographystyle{unsrt} 
+\end{document}  
