@@ -54,7 +54,7 @@ producer.setNamesrvAddr("localhost:8876");
 \end{enumerate} 
 
 
-\subsection{消息类型}
+\subsection{消息类型}\label{subsection:message-type}
 RocketMQ支持3种消息模式：
 
 \begin{enumerate}[itemindent=1em]
@@ -63,11 +63,11 @@ RocketMQ支持3种消息模式：
 
 \item Reliable asynchronous transmission 可靠异步传输。
 
-\item One-way transmission One-way传输。
+\item One-way transmission 单向传输。
 
 \end{enumerate} 
 
-同步和异步传输都是通过send方法发送，其中异步传输还需要额外提供SendCallback接口的实现，而one-way消息通过sendOneway方法发送。
+同步和异步传输都是通过send方法发送，其中异步传输还需要额外提供SendCallback接口的实现，而单向消息通过sendOneway方法发送。
 
 \subsection{Message类}
 无论是那种传输模型，消息本身都储存在Message.java类中，在调用其构造函数时，至少需要传入消息主题、消息标签和消息体3个参数。以下是各个参数的含义：
@@ -188,11 +188,46 @@ MessageQueue tmpmq = topicPublishInfo.selectOneMessageQueue(lastBrokerName);
 sendResult = this.sendKernelImpl(msg, mq, communicationMode, sendCallback, timeout);
 \end{lstlisting}
 
+其中最核心的步骤是调用MQClientAPIImpl的sendMessage方法。上文 \ref{subsection:message-type} 提到，消息的发送分为同步、异步和单向3种模式。体现在代码里就是：
+\begin{lstlisting}[language=Java, style=customStyleJavaLight]
+switch (communicationMode) {
+    case ONEWAY:
+        this.remotingClient.invokeOneway(addr, request, timeoutMillis);
+        return null;
+    case ASYNC:
+        this.sendMessageAsync(addr, brokerName, msg, timeoutMillis, request, sendCallback);
+        return null;
+    case SYNC:
+        return this.sendMessageSync(addr, brokerName, msg, timeoutMillis, request);
+    default:
+        assert false;
+        break;
+    }
+\end{lstlisting}
+
+消息发送在底层是通过netty实现的，三种模式的区别在于对ChannelFutureListener的实现：
+\begin{enumerate}[itemindent=1em]
+\item invokeOneway 发送消息，不设置回调，不处理回执：调用RemotingClient.invokeOneway方法，其中ChannelFutureListener只是释放了信号量并且对于请求失败的场景打印了warning日志，也不会调用MQClientAPIImpl.processSendResponse方法。
+\item sendMessageSync 发送消息，不设置回调，阻塞、同步的处理回执：调用RemotingClient.invokeSync方法，其中ChannelFutureListener对于ChannelFuture的返回结果是否成功做了不同的业务处理，并调用ResponseFuture的waitResponse方法进入阻塞状态，随后调用MQClientAPIImpl.processSendResponse方法。
+\item sendMessageAsync 发送消息，设置回调，非阻塞、异步的处理回执：调用RemotingClient.invokeAsync方法，其中ChannelFutureListener的逻辑与同步模式基本类似，同时还需要实现InvokeCallback接口，该接口在ChannelFuture返回失败时会被调用到。
+\end{enumerate}
+
+目前对于netty的了解比较局限，从源码分析来看，netty对于请求的响应都是异步处理的，具体还可以拆分成2个逻辑：
+\begin{enumerate}[itemindent=1em]
+\item NettyRemotingClient的内部类NettyClientHandler的channelRead0方法。该方法根据是否设置了SendCallback可以区分出异步模式和非异步模式。同时，该方法通过调用ResponseFuture的setResponseCommand方法，使得前述同步模式的阻塞得以解除。
+\item ChannelFutureListener的operationComplete方法。该方法应该是channelRead0方法完成之后的回调操作。
+\end{enumerate}
+
+% 信号量实现仅发送1次。
+
+
+
+
 \subsection{和Kafka的对比}
 假设基础环境都是4台物理机\{A, B, C, D\}和4个Topic。
 
 \subsubsection{RocketMQ}
-2Master，2Slave模式下，Broker-A=\{master: A, slave: B\}，Broker-B=\{master: C, slave: D\}，假设Broker-A和Broker-B各设置了4个Message Queue（writeQueueNums为4），则每个Topic可以往8个Message Queue上写数据。
+2Master，2Slave模式下，Broker-A=\{master: A, slave: B\}，Broker-B=\{master: C, slave: D\}，假设Broker-A和Broker-B各设置了4个Message Queue（writeQueueNums为4），则每个Topic可以往8个Message Queue上写数据。Broker-\{A，B\}各存储1/2的数据。
 
 \subsubsection{Kafka}
 Broker-A=\{A\}，Broker-B=\{B\}，Broker-C=\{C\}，Broker-D=\{D\}，假设A的Replica在B上，B的Replica在A上，C的Replica在D上，D的Replica在C上；每个Topic分为8个Partition则Broker-\{A，B，C，D\}理论上应该各存储1/4的数据。
